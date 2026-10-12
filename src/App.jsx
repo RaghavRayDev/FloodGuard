@@ -1,18 +1,17 @@
-
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
 import WeatherDashboard from "./WeatherDashboard";
-
 import {
-  MapContainer,
-  TileLayer,
   Circle,
-  Popup,
+  MapContainer,
   Marker,
+  Popup,
+  TileLayer,
 } from "react-leaflet";
-
 import "leaflet/dist/leaflet.css";
 import "./App.css";
 
+const API_URL =
+  "https://floodguard-backend-zox3.onrender.com/api/risk/assess";
 const STORAGE_KEY = "floodguard_assessment_history";
 
 const INITIAL_PLACES = [
@@ -48,11 +47,11 @@ function findMatchingPlace(location) {
   const normalized = normalizeLocation(location);
 
   return INITIAL_PLACES.find((place) => {
-    const placeName = normalizeLocation(place.name);
     const cityName = normalizeLocation(place.name.split(",")[0]);
+    const fullName = normalizeLocation(place.name);
 
     return (
-      normalized === placeName ||
+      normalized === fullName ||
       normalized === cityName ||
       normalized.startsWith(cityName)
     );
@@ -61,7 +60,7 @@ function findMatchingPlace(location) {
 
 function getSavedHistory() {
   try {
-    const saved = localStorage.getItem(STORAGE_KEY);
+    const saved = window.localStorage.getItem(STORAGE_KEY);
     if (!saved) return [];
 
     const parsed = JSON.parse(saved);
@@ -78,16 +77,15 @@ function FloodMap({ assessmentResult }) {
     if (!assessmentResult) return;
 
     const matched = findMatchingPlace(assessmentResult.location);
-
-    if (matched) {
-      setSelectedPlace(matched);
-    }
+    if (matched) setSelectedPlace(matched);
   }, [assessmentResult]);
 
+  const matchedSelectedPlace = findMatchingPlace(
+    assessmentResult?.location
+  );
   const selectedMatchesAssessment =
     Boolean(assessmentResult) &&
-    findMatchingPlace(assessmentResult.location)?.name === selectedPlace.name;
-
+    matchedSelectedPlace?.name === selectedPlace.name;
   const selectedRisk = selectedMatchesAssessment
     ? assessmentResult.level
     : selectedPlace.risk;
@@ -100,7 +98,8 @@ function FloodMap({ assessmentResult }) {
           Flood monitoring <span>map.</span>
         </h2>
         <p>
-          Explore sample locations and illustrative flood-risk assessment results.
+          Explore sample locations and illustrative flood-risk assessment
+          results.
         </p>
       </div>
 
@@ -136,7 +135,7 @@ function FloodMap({ assessmentResult }) {
           key={selectedPlace.name}
           center={[selectedPlace.lat, selectedPlace.lng]}
           zoom={5}
-          scrollWheelZoom={true}
+          scrollWheelZoom
           style={{ height: "450px", width: "100%", borderRadius: "14px" }}
         >
           <TileLayer
@@ -145,14 +144,10 @@ function FloodMap({ assessmentResult }) {
           />
 
           {INITIAL_PLACES.map((place) => {
-            const matchesAssessment =
+            const isAssessed =
               Boolean(assessmentResult) &&
               findMatchingPlace(assessmentResult.location)?.name === place.name;
-
-            const risk = matchesAssessment
-              ? assessmentResult.level
-              : place.risk;
-
+            const risk = isAssessed ? assessmentResult.level : place.risk;
             const color = getRiskColor(risk);
 
             return (
@@ -171,7 +166,7 @@ function FloodMap({ assessmentResult }) {
                   <strong>{place.name}</strong>
                   <br />
                   Risk Level: {risk}
-                  {matchesAssessment && (
+                  {isAssessed && (
                     <>
                       <br />
                       Risk Score: {assessmentResult.score}/100
@@ -183,7 +178,7 @@ function FloodMap({ assessmentResult }) {
                   )}
                   <br />
                   <small>
-                    {matchesAssessment
+                    {isAssessed
                       ? "Illustrative assessment result."
                       : "Sample risk label only."}
                   </small>
@@ -212,7 +207,9 @@ function FloodMap({ assessmentResult }) {
                 <small>No assessment available for this location yet.</small>
               )}
               <br />
-              <small>Illustrative demo result, not an official flood warning.</small>
+              <small>
+                Illustrative demo result, not an official flood warning.
+              </small>
             </Popup>
           </Marker>
         </MapContainer>
@@ -234,10 +231,11 @@ function App() {
   const [currentWeather, setCurrentWeather] = useState(null);
   const [history, setHistory] = useState(getSavedHistory);
   const [formError, setFormError] = useState("");
+  const [isAssessing, setIsAssessing] = useState(false);
 
   useEffect(() => {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(history));
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(history));
     } catch {
       setFormError("Unable to save history in browser storage.");
     }
@@ -255,8 +253,10 @@ function App() {
     });
   }
 
-  function handleAssessment(event) {
+  async function handleAssessment(event) {
     event.preventDefault();
+    if (isAssessing) return;
+
     setFormError("");
 
     const cleanLocation = location.trim();
@@ -284,30 +284,53 @@ function App() {
       return;
     }
 
-    const score = Math.min(
-      100,
-      Math.max(0, Math.round((rain / 300) * 60 + (water / 10) * 40))
-    );
+    setIsAssessing(true);
 
-    let level;
+    try {
+      const response = await fetch(API_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          location: cleanLocation,
+          rainfall: rain,
+          waterLevel: water,
+        }),
+      });
 
-    if (score < 30) level = "Low";
-    else if (score < 60) level = "Moderate";
-    else if (score < 80) level = "High";
-    else level = "Severe";
+      if (!response.ok) {
+        throw new Error(`Server returned status ${response.status}`);
+      }
 
-    const assessment = {
-      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      location: cleanLocation,
-      rainfall: rain,
-      waterLevel: water,
-      score,
-      level,
-      createdAt: new Date().toISOString(),
-    };
+      const data = await response.json();
 
-    setResult(assessment);
-    setHistory((previous) => [assessment, ...previous].slice(0, 50));
+      if (
+        typeof data.score !== "number" ||
+        typeof data.level !== "string"
+      ) {
+        throw new Error("Unexpected response from risk assessment server.");
+      }
+
+      const assessment = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        location: data.location || cleanLocation,
+        rainfall: data.rainfall ?? rain,
+        waterLevel: data.waterLevel ?? water,
+        score: data.score,
+        level: data.level,
+        message: data.message || "",
+        createdAt: new Date().toISOString(),
+      };
+
+      setResult(assessment);
+      setHistory((previous) => [assessment, ...previous].slice(0, 50));
+    } catch (error) {
+      console.error("Risk assessment failed:", error);
+      setFormError(
+        "Unable to connect to the risk assessment server. Please try again."
+      );
+    } finally {
+      setIsAssessing(false);
+    }
   }
 
   function viewHistory(item) {
@@ -322,9 +345,7 @@ function App() {
   }
 
   function clearHistory() {
-    const confirmed = window.confirm("Delete all saved assessment history?");
-    if (!confirmed) return;
-
+    if (!window.confirm("Delete all saved assessment history?")) return;
     setHistory([]);
     setResult(null);
     setFormError("");
@@ -333,9 +354,7 @@ function App() {
   function downloadReport() {
     if (!result) return;
 
-    const report = `
-FLOODGUARD - ASSESSMENT REPORT
-================================
+    const report = `FLOODGUARD - ASSESSMENT REPORT
 
 Location: ${result.location}
 Date: ${new Date(result.createdAt).toLocaleString()}
@@ -347,8 +366,7 @@ Demo Risk Score: ${result.score}/100
 Demo Risk Level: ${result.level}
 
 SCORING METHOD
-Rainfall contributes 60% and river level contributes 40%
-to the illustrative score.
+Rainfall contributes 60% and river level contributes 40% to the illustrative score.
 
 IMPORTANT DISCLAIMER
 This report contains an illustrative demonstration score only.
@@ -356,20 +374,15 @@ It is not an official flood prediction or emergency warning.
 Do not use it to make real-world safety decisions.
 `;
 
-    const blob = new Blob([report], {
-      type: "text/plain;charset=utf-8",
-    });
-
+    const blob = new Blob([report], { type: "text/plain;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
 
     link.href = url;
     link.download = `FloodGuard_Report_${Date.now()}.txt`;
-
     document.body.appendChild(link);
     link.click();
     link.remove();
-
     URL.revokeObjectURL(url);
   }
 
@@ -407,7 +420,7 @@ Do not use it to make real-world safety decisions.
         <section className="hero" id="home">
           <div className="hero-content">
             <div className="eyebrow">
-              <span className="pulse"></span>
+              <span className="pulse" />
               FLOOD RISK AWARENESS PLATFORM
             </div>
 
@@ -419,7 +432,8 @@ Do not use it to make real-world safety decisions.
 
             <p>
               Explore weather information, assess illustrative flood-risk
-              indicators, and visualize sample locations through an interactive map.
+              indicators, and visualize sample locations through an interactive
+              map.
             </p>
 
             <div className="hero-actions">
@@ -434,14 +448,13 @@ Do not use it to make real-world safety decisions.
               >
                 Assess Flood Risk ↗
               </button>
-
               <a className="secondary-button" href="#features">
                 Explore Platform ↓
               </a>
             </div>
 
             <div className="hero-note">
-              <span className="note-dot"></span>
+              <span className="note-dot" />
               Better information. Better preparedness.
             </div>
           </div>
@@ -456,9 +469,9 @@ Do not use it to make real-world safety decisions.
             </div>
 
             <div className="water-visual">
-              <div className="water-circle circle-one"></div>
-              <div className="water-circle circle-two"></div>
-              <div className="water-circle circle-three"></div>
+              <div className="water-circle circle-one" />
+              <div className="water-circle circle-two" />
+              <div className="water-circle circle-three" />
               <div className="map-pin">⌖</div>
               <div className="map-label">Flood monitoring zone</div>
             </div>
@@ -468,7 +481,6 @@ Do not use it to make real-world safety decisions.
                 <span className="small-label">ASSESSMENT STATUS</span>
                 <h3>{result ? `${result.level} Risk` : "Ready to assess"}</h3>
               </div>
-
               <span
                 className="status-icon"
                 style={result ? { color: getRiskColor(result.level) } : {}}
@@ -510,27 +522,21 @@ Do not use it to make real-world safety decisions.
             <article className="feature-card">
               <div className="feature-icon">◉</div>
               <h3>Risk Assessment</h3>
-              <p>
-                Calculate an illustrative score using rainfall and river-level inputs.
-              </p>
+              <p>Calculate an illustrative score using rainfall and river-level inputs.</p>
               <a href="#assessment">Explore assessment ↗</a>
             </article>
 
             <article className="feature-card">
               <div className="feature-icon">⌖</div>
               <h3>Interactive Maps</h3>
-              <p>
-                Explore sample Indian locations and illustrative risk zones.
-              </p>
+              <p>Explore sample Indian locations and illustrative risk zones.</p>
               <a href="#map">Explore map ↗</a>
             </article>
 
             <article className="feature-card">
               <div className="feature-icon">⌁</div>
               <h3>Assessment History</h3>
-              <p>
-                Keep a local record of your recent assessments in this browser.
-              </p>
+              <p>Keep a local record of your recent assessments in this browser.</p>
               <a href="#history">View history ↗</a>
             </article>
           </div>
@@ -564,7 +570,7 @@ Do not use it to make real-world safety decisions.
             {currentWeather && (
               <div className="weather-results">
                 <h3>Selected Weather Data</h3>
-                <p>City: {currentWeather.city}</p>
+                <p>City: {currentWeather.city || "N/A"}</p>
                 <p>
                   Current precipitation: {currentWeather.precipitation ?? "N/A"} mm
                 </p>
@@ -609,7 +615,6 @@ Do not use it to make real-world safety decisions.
                     required
                   />
                 </div>
-
                 <div>
                   <label htmlFor="waterLevel">River level (metres)</label>
                   <input
@@ -630,11 +635,17 @@ Do not use it to make real-world safety decisions.
               </div>
 
               {formError && (
-                <p className="form-error" role="alert">{formError}</p>
+                <p className="form-error" role="alert">
+                  {formError}
+                </p>
               )}
 
-              <button className="primary-button submit-button" type="submit">
-                Calculate Demo Score ↗
+              <button
+                className="primary-button submit-button"
+                type="submit"
+                disabled={isAssessing}
+              >
+                {isAssessing ? "Connecting to Server..." : "Calculate Demo Score ↗"}
               </button>
             </form>
 
@@ -649,7 +660,6 @@ Do not use it to make real-world safety decisions.
                       {result.level} Risk
                     </h3>
                   </div>
-
                   <div
                     className="score-circle"
                     style={{
@@ -666,7 +676,7 @@ Do not use it to make real-world safety decisions.
                   <div
                     className="score-fill"
                     style={{
-                      width: `${result.score}%`,
+                      width: `${Math.max(0, Math.min(100, result.score))}%`,
                       background: getRiskColor(result.level),
                     }}
                   />
@@ -679,9 +689,8 @@ Do not use it to make real-world safety decisions.
                 </div>
 
                 <p className="result-note">
-                  This is a demonstration score based on a simple formula. It
-                  is not a trained AI model, verified flood prediction, or
-                  official warning. Do not use it for real-world safety decisions.
+                  {result.message ||
+                    "This is an illustrative demonstration score, not a verified flood prediction or official warning. Do not use it for real-world safety decisions."}
                 </p>
 
                 <div className="hero-actions">
@@ -696,7 +705,6 @@ Do not use it to make real-world safety decisions.
                   >
                     View Map Result ↓
                   </button>
-
                   <button
                     className="primary-button"
                     type="button"
@@ -719,9 +727,12 @@ Do not use it to make real-world safety decisions.
 
           <div className="history-header">
             <h3>Saved Assessments ({history.length})</h3>
-
             {history.length > 0 && (
-              <button className="secondary-button" type="button" onClick={clearHistory}>
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={clearHistory}
+              >
                 Clear History
               </button>
             )}
@@ -744,7 +755,6 @@ Do not use it to make real-world safety decisions.
                     <p>River level: {item.waterLevel} m</p>
                     <small>{new Date(item.createdAt).toLocaleString()}</small>
                   </div>
-
                   <div className="history-actions">
                     <strong style={{ color: getRiskColor(item.level) }}>
                       {item.level}
