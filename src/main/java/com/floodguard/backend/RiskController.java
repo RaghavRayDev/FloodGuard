@@ -14,6 +14,12 @@ import org.springframework.web.bind.annotation.RestController;
 @CrossOrigin(origins = "*")
 public class RiskController {
 
+    private final FloodRiskAssessmentRepository repository;
+
+    public RiskController(FloodRiskAssessmentRepository repository) {
+        this.repository = repository;
+    }
+
     @GetMapping("/api/risk/status")
     public String getStatus() {
         return "FloodGuard Backend is Running!";
@@ -59,14 +65,29 @@ public class RiskController {
             level = "Severe";
         }
 
+        String message =
+                "Illustrative demo result, not an official flood warning";
+
+        FloodRiskAssessment assessment = new FloodRiskAssessment();
+        assessment.setLocation(location);
+        assessment.setRainfall(rainfall);
+        assessment.setWaterLevel(waterLevel);
+        assessment.setScore(score);
+        assessment.setLevel(level);
+        assessment.setMessage(message);
+
+        FloodRiskAssessment savedAssessment =
+                repository.save(assessment);
+
         Map<String, Object> response = new HashMap<>();
-        response.put("location", location);
-        response.put("rainfall", rainfall);
-        response.put("waterLevel", waterLevel);
-        response.put("score", score);
-        response.put("level", level);
-        response.put("message",
-                "Illustrative demo result, not an official flood warning");
+        response.put("id", savedAssessment.getId());
+        response.put("location", savedAssessment.getLocation());
+        response.put("rainfall", savedAssessment.getRainfall());
+        response.put("waterLevel", savedAssessment.getWaterLevel());
+        response.put("score", savedAssessment.getScore());
+        response.put("level", savedAssessment.getLevel());
+        response.put("message", savedAssessment.getMessage());
+        response.put("assessedAt", savedAssessment.getAssessedAt());
 
         return response;
     }
